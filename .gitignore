@@ -57,7 +57,7 @@ build/distributions/
 # Clés, caches locaux et config (ne jamais versionner)
 config.json
 priors_cache.json
-pip
+/pip
 .astrometry_api_key
 *.pem
 secrets.json
