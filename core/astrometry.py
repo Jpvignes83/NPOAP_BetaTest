@@ -11,10 +11,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 import subprocess
 import numpy as np
-import threading
 import tempfile
-import astropy.units as u
-from astropy.coordinates import SkyCoord, solar_system_ephemeris
 
 logger = logging.getLogger(__name__)
 
@@ -284,15 +281,24 @@ class AstrometrySolverNova:
     # -------------------------------------------------------------------
     # Solve full directory
     # -------------------------------------------------------------------
-    def solve_directory(self, directory: Path, progress_callback=None):
+    def solve_directory(self, directory: Path, progress_callback=None, pipeline_control=None):
+        """
+        Résout chaque FITS du répertoire, une image après l'autre.
+        Une seule source de pourcentage (fin de fichier) pour une barre monotone côté UI.
+        """
         files = sorted(directory.glob("*.fits"))
         total = len(files)
+        if total == 0:
+            return
         for i, f in enumerate(files):
-            cb = (
-                lambda p: progress_callback(int((i + p / 100.0) / total * 100))
-                if progress_callback else None
-            )
-            self.solve_file(f, cb)
+            if pipeline_control is not None:
+                pipeline_control.wait_if_paused()
+                if pipeline_control.should_stop():
+                    logger.info("Astrométrie NOVA interrompue par l'utilisateur.")
+                    return
+            self.solve_file(f, progress_callback=None)
+            if progress_callback:
+                progress_callback(int((i + 1) / total * 100))
 
 @dataclass
 class SolverConfig:

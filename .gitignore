@@ -53,6 +53,8 @@ tmp_*.min.js
 *.rar
 *.pdf
 build/distributions/
+# Build full locale (ex. C:\...\NPOAP\distributions\full) — ne pas mélanger avec le dépôt dev
+distributions/
 
 # Clés, caches locaux et config (ne jamais versionner)
 config.json

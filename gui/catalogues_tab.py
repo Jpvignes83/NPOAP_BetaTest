@@ -97,7 +97,7 @@ class CataloguesTab(ttk.Frame):
         self.inner_notebook = ttk.Notebook(self)
         self.inner_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Créer les onglets par type d'objet (la zone logs est créée dans l'onglet Étoiles, sous Conversion 1476)
+        # Créer les onglets par type d'objet (la zone logs est créée dans l'onglet Étoiles)
         try:
             self.create_stars_tab()  # Onglet Étoiles
         except Exception as e:
@@ -626,10 +626,6 @@ class CataloguesTab(ttk.Frame):
         left_canvas.bind("<Button-4>", _left_on_mousewheel)
         left_canvas.bind("<Button-5>", _left_on_mousewheel)
         left_canvas.after_idle(_left_update_scrollregion)
-        
-        self.astap_input_dir_var = tk.StringVar(value=str(self.output_dir / "gaia_dr3"))
-        self.astap_output_dir_var = tk.StringVar(value=str(self.output_dir / "catalogues_1476"))
-        self.astap_mag_limit_var = tk.StringVar()
 
         self.create_logs_section(parent=right_frame)
     
@@ -2958,65 +2954,6 @@ class CataloguesTab(ttk.Frame):
             
         except Exception as e:
             error_msg = f"Erreur lors du téléchargement Gaia DR3: {e}"
-            self.log_message(f"❌ {error_msg}", "error")
-            logger.exception(e)
-            messagebox.showerror("Erreur", error_msg)
-    
-    # ============================================================
-    # MÉTHODES POUR CONVERSION ASTAP
-    # ============================================================
-    
-    def start_astap_conversion_thread(self):
-        """Lance la conversion vers ASTAP dans un thread séparé."""
-        thread = threading.Thread(target=self.run_astap_conversion, daemon=True)
-        thread.start()
-    
-    def run_astap_conversion(self):
-        """Exécute la conversion des catalogues Gaia vers format ASTAP."""
-        try:
-            from core.gaia_to_astap_converter import GaiaCatalogConverter
-            
-            input_dir = Path(self.astap_input_dir_var.get())
-            output_dir = Path(self.astap_output_dir_var.get())
-            
-            if not input_dir.exists():
-                self.log_message(f"❌ Répertoire introuvable : {input_dir}", "error")
-                messagebox.showerror("Erreur", f"Répertoire introuvable : {input_dir}")
-                return
-            
-            mag_limit = None
-            if self.astap_mag_limit_var.get().strip():
-                try:
-                    mag_limit = float(self.astap_mag_limit_var.get())
-                except ValueError:
-                    self.log_message("⚠️ Magnitude limite invalide, ignorée", "warning")
-            
-            self.log_message(f"🔄 Début conversion vers format 1476-6 (magnitude G)...", "info")
-            self.log_message(f"   Répertoire entrée: {input_dir}", "info")
-            self.log_message(f"   Répertoire sortie: {output_dir}", "info")
-            if mag_limit is not None:
-                self.log_message(f"   Magnitude limite: {mag_limit}", "info")
-            
-            converter = GaiaCatalogConverter(output_dir=output_dir)
-            
-            output_files = converter.convert_directory(
-                input_dir=input_dir,
-                output_name_prefix="gaia_1476",
-                mag_limit=mag_limit,
-                pattern=None  # Cherche automatiquement *.csv.gz et *.csv
-            )
-            
-            self.log_message(f"✅ Conversion terminée : {len(output_files)} fichiers créés", "info")
-            for output_file in output_files:
-                self.log_message(f"   📄 {output_file.name}", "info")
-            
-            messagebox.showinfo(
-                "Succès",
-                f"Conversion terminée !\n{len(output_files)} fichiers format 1476-6 créés\nRépertoire : {output_dir}"
-            )
-            
-        except Exception as e:
-            error_msg = f"Erreur lors de la conversion format 1476-6: {e}"
             self.log_message(f"❌ {error_msg}", "error")
             logger.exception(e)
             messagebox.showerror("Erreur", error_msg)

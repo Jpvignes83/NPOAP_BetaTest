@@ -13,8 +13,7 @@ from astropy.io import fits
 from astropy.visualization import ZScaleInterval
 from scipy.ndimage import maximum_filter
 
-from core.image_processor import ImageProcessor
-from core.astrometry import AstrometrySolverNova
+from core.image_processor import ImageProcessor, PipelineControl
 from gui.asteroid_photometry_tab import estimate_fwhm_marginal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -31,14 +30,16 @@ class CCDProcGUI:
         self.dark_files = []
         self.flat_files = []
         self.output_dir = None
-        self.sep_catalog_folder = ""
         self.progress_prefix = "📊 Progression :"
         self.astrometry_thread = None
         self.astrometry_cancelled = False
         self.astrometry_process = None
-        self.viewer_directory = None  # Répertoire pour la visualisation (section 5)
+        self.viewer_directory = None  # Répertoire pour la visualisation (section 4)
         self.quality_rows = []        # Données de qualité images (section Qualité)
         self._ui_queue = queue.Queue()
+        self.pipeline_control = PipelineControl()
+        self._progress_floor = 0.0
+        self._progress_monotone = False
         self.create_widgets()
         self._start_ui_queue_poller()
 
@@ -96,35 +97,37 @@ class CCDProcGUI:
         astro_frame = ttk.LabelFrame(left_frame, text="2. Astrométrie (Plate Solving)")
         astro_frame.pack(fill="x", padx=5, pady=10)
 
-        ttk.Button(
-            astro_frame,
+        astro_btns = ttk.Frame(astro_frame)
+        astro_btns.pack(fill="x", padx=5, pady=2)
+        self._pack_action_with_pipeline_row(
+            astro_btns,
             text="🌐 Via Astrometry.net (NOVA)",
             command=self.run_astrometry_nova,
-        ).pack(fill="x", padx=5, pady=2)
-
-        ttk.Button(
-            astro_frame,
+        )
+        self._pack_action_with_pipeline_row(
+            astro_btns,
             text="🖥️ Astrométrie locale (WSL)",
             command=self.run_astrometry_local,
-        ).pack(fill="x", padx=5, pady=2)
+        )
 
         # ============================================================
         # SECTION 3 : ALIGNEMENT, EMPILEMENT & QUALITÉ
         # ============================================================
-        post_frame = ttk.LabelFrame(left_frame, text="4. Post-Traitement")
+        post_frame = ttk.LabelFrame(left_frame, text="3. Post-Traitement")
         post_frame.pack(fill="both", padx=5, pady=10, expand=False)
 
-        ttk.Button(
-            post_frame,
+        post_btns = ttk.Frame(post_frame)
+        post_btns.pack(fill="x", padx=5, pady=2)
+        self._pack_action_with_pipeline_row(
+            post_btns,
             text="📐 Aligner images (WCS)",
             command=self.start_alignment_thread,
-        ).pack(fill="x", padx=5, pady=2)
-
-        ttk.Button(
-            post_frame,
+        )
+        self._pack_action_with_pipeline_row(
+            post_btns,
             text="📚 Empiler images (Stack)",
             command=self.start_stacking_thread,
-        ).pack(fill="x", padx=5, pady=2)
+        )
 
         # Sous-section Qualité des images (liste triable)
         quality_frame = ttk.LabelFrame(post_frame, text="Qualité des images (science ou calibrées)")
@@ -162,9 +165,9 @@ class CCDProcGUI:
             self.quality_tree.column(cid, width=widths[cid], anchor="center")
 
         # ============================================================
-        # SECTION 5 : VISUALISATION
+        # SECTION 4 : VISUALISATION
         # ============================================================
-        viz_frame = ttk.LabelFrame(left_frame, text="5. Visualisation")
+        viz_frame = ttk.LabelFrame(left_frame, text="4. Visualisation")
         viz_frame.pack(fill="x", padx=5, pady=10)
 
         ttk.Button(
@@ -204,6 +207,48 @@ class CCDProcGUI:
             maximum=100,
         )
         self.progress_bar.pack(fill=tk.X, padx=5)
+
+    def _pack_action_with_pipeline_row(
+        self,
+        parent: ttk.Frame,
+        *,
+        text: str,
+        command,
+    ) -> None:
+        """Bouton d'action et Pause | Reprise | Stop sur la même ligne."""
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=2)
+        ctrl = ttk.Frame(row)
+        ctrl.pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(ctrl, text="Pause", command=self.pipeline_pause, width=8).pack(
+            side=tk.LEFT, padx=1
+        )
+        ttk.Button(ctrl, text="Reprise", command=self.pipeline_resume, width=8).pack(
+            side=tk.LEFT, padx=1
+        )
+        ttk.Button(ctrl, text="Stop", command=self.pipeline_stop, width=8).pack(
+            side=tk.LEFT, padx=1
+        )
+        ttk.Button(row, text=text, command=command).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2)
+        )
+
+    def _reset_pipeline_for_new_task(self) -> None:
+        self.pipeline_control.reset()
+        self._progress_floor = 0.0
+        self._progress_monotone = False
+
+    def pipeline_pause(self) -> None:
+        self.pipeline_control.pause()
+        self.log_message("⏸ Pipeline en pause (reprise possible).")
+
+    def pipeline_resume(self) -> None:
+        self.pipeline_control.resume()
+        self.log_message("▶ Pipeline repris.")
+
+    def pipeline_stop(self) -> None:
+        self.pipeline_control.stop()
+        self.log_message("⏹ Arrêt demandé : fin de l'étape en cours, puis arrêt entre fichiers.")
 
     # ------------------------------------------------------------------
     # Exécution UI thread-safe
@@ -314,7 +359,7 @@ class CCDProcGUI:
     def calibration_task(self):
         self.log_message("🚀 Début de la calibration...")
         try:
-            self.processor.process_calibration(
+            filter_warn = self.processor.process_calibration(
                 self.files,
                 self.bias_files,
                 self.dark_files,
@@ -323,6 +368,8 @@ class CCDProcGUI:
                 scale_darks=self.scale_darks_var.get(),
             )
             self.update_progress(100)
+            if filter_warn:
+                self.log_message(filter_warn, "warning")
             self.log_message("✅ Calibration terminée. Lancez l'astrométrie maintenant.")
         except Exception as e:
             self.log_message(f"❌ Erreur durant la calibration : {e}", "error")
@@ -349,6 +396,8 @@ class CCDProcGUI:
             return
 
         self.progress_prefix = "📊 Astrométrie locale :"
+        self._reset_pipeline_for_new_task()
+        self._progress_monotone = True
         self.update_progress(0)
 
         thread = threading.Thread(
@@ -376,6 +425,8 @@ class CCDProcGUI:
             return
 
         self.progress_prefix = "📊 Astrométrie NOVA :"
+        self._reset_pipeline_for_new_task()
+        self._progress_monotone = True
         self.update_progress(0)
 
         thread = threading.Thread(
@@ -390,6 +441,7 @@ class CCDProcGUI:
 
         if self.processor is None:
             self.log_message("❌ ImageProcessor non initialisé.", "error")
+            self._progress_monotone = False
             self.update_progress(0)
             return
 
@@ -400,44 +452,54 @@ class CCDProcGUI:
                 f"⚠️ Aucun fichier calibré trouvé dans le dossier {calibrated_dir}.",
                 "warning",
             )
+            self._progress_monotone = False
             self.update_progress(0)
             return
 
         method = method.upper()
         success = False
 
-        if method == "LOCAL":
-            self.processor.bash_path = self.bash_path
-            try:
-                self.processor.process_astrometry(
-                    method="LOCAL",
-                    progress_callback=self.update_progress,
-                )
-                self.log_message("✅ Astrométrie locale terminée.")
-                success = True
-            except Exception as e:
-                self.log_message(f"❌ Erreur durant l'astrométrie locale : {e}", "error")
-                self.update_progress(0)
+        try:
+            if method == "LOCAL":
+                self.processor.bash_path = self.bash_path
+                try:
+                    self.processor.process_astrometry(
+                        method="LOCAL",
+                        progress_callback=self.update_progress,
+                        pipeline_control=self.pipeline_control,
+                    )
+                    if self.pipeline_control.should_stop():
+                        self.log_message("⚠️ Astrométrie locale interrompue (Stop).", "warning")
+                    else:
+                        self.log_message("✅ Astrométrie locale terminée.")
+                        success = True
+                except Exception as e:
+                    self.log_message(f"❌ Erreur durant l'astrométrie locale : {e}", "error")
+                    self.update_progress(0)
 
-        elif method == "NOVA":
-            try:
-                solver = AstrometrySolverNova(
-                    output_dir=self.processor.astrometry_dir,
-                )
-                solver.solve_directory(
-                    calibrated_dir,
-                    progress_callback=self.update_progress,
-                )
-                self.log_message("✅ Astrométrie NOVA terminée.")
-                success = True
-            except Exception as e:
-                self.log_message(f"❌ Erreur durant l'astrométrie NOVA : {e}", "error")
-                self.update_progress(0)
+            elif method == "NOVA":
+                try:
+                    self.processor.process_astrometry(
+                        method="NOVA",
+                        progress_callback=self.update_progress,
+                        pipeline_control=self.pipeline_control,
+                    )
+                    if self.pipeline_control.should_stop():
+                        self.log_message("⚠️ Astrométrie NOVA interrompue (Stop).", "warning")
+                    else:
+                        self.log_message("✅ Astrométrie NOVA terminée.")
+                        success = True
+                except Exception as e:
+                    self.log_message(f"❌ Erreur durant l'astrométrie NOVA : {e}", "error")
+                    self.update_progress(0)
 
-        else:
-            self.log_message(f"❌ Méthode inconnue : {method}", "error")
-            self.update_progress(0)
-            return
+            else:
+                self.log_message(f"❌ Méthode inconnue : {method}", "error")
+                self.update_progress(0)
+                return
+        finally:
+            self._progress_monotone = False
+            self._progress_floor = 0.0
 
         if success:
             self.log_message("🎯 Astrométrie terminée.")
@@ -458,14 +520,19 @@ class CCDProcGUI:
             return
 
         self.progress_prefix = "📐 Alignement :"
+        self._reset_pipeline_for_new_task()
         try:
             self.processor.process_alignment_wcs(
                 input_dir=input_dir,
                 output_dir=output_dir,
                 progress_callback=self.update_progress,
+                pipeline_control=self.pipeline_control,
             )
-            self.log_message(f"✅ Images alignées dans : {output_dir}")
-            self._showinfo("Succès", "Alignement terminé.")
+            if self.pipeline_control.should_stop():
+                self.log_message("⚠️ Alignement interrompu (Stop).", "warning")
+            else:
+                self.log_message(f"✅ Images alignées dans : {output_dir}")
+                self._showinfo("Succès", "Alignement terminé.")
         except Exception as e:
             self.log_message(f"❌ Erreur alignement : {e}", "error")
         finally:
@@ -498,21 +565,29 @@ class CCDProcGUI:
         if not save_path: return
 
         self.progress_prefix = "📚 Empilement :"
+        self._reset_pipeline_for_new_task()
         try:
             self.processor.process_stacking(
                 input_files=[Path(f) for f in files],
                 output_path=Path(save_path),
                 progress_callback=self.update_progress,
+                pipeline_control=self.pipeline_control,
             )
             self.log_message(f"✅ Master créé : {Path(save_path).name}")
             self._showinfo("Succès", "Empilement terminé.")
+        except RuntimeError as e:
+            msg = str(e)
+            if "interrompu" in msg.lower():
+                self.log_message(f"⚠️ {msg}", "warning")
+            else:
+                self.log_message(f"❌ Erreur empilement : {e}", "error")
         except Exception as e:
             self.log_message(f"❌ Erreur empilement : {e}", "error")
         finally:
             self.update_progress(0)
 
     # ------------------------------------------------------------------
-    # Section 5 : Visualisation
+    # Section 4 : Visualisation
     # ------------------------------------------------------------------
     def _set_viewer_directory(self):
         """Définit le répertoire contenant les images à visualiser."""
@@ -526,7 +601,7 @@ class CCDProcGUI:
         ImageViewerWindow(self)
 
     # ------------------------------------------------------------------
-    # Qualité des images (section 4)
+    # Qualité des images (sous-section du post-traitement, section 3)
     # ------------------------------------------------------------------
     def _image_quality_source_dir(self) -> Path | None:
         """
@@ -546,7 +621,7 @@ class CCDProcGUI:
         return self.viewer_directory
 
     def analyze_image_quality(self):
-        """Lance l'analyse de qualité des images et remplit le tableau de la section 4."""
+        """Lance l'analyse de qualité des images et remplit le tableau Qualité (section 3)."""
         directory = self._image_quality_source_dir()
         if directory is None or not Path(directory).exists():
             self._showwarning("Qualité images", "Aucun répertoire d'images trouvé (science/aligned ou visualisation).")
@@ -741,6 +816,9 @@ class CCDProcGUI:
             p = max(0, min(100, float(percent)))
         except Exception:
             p = 0.0
+        if getattr(self, "_progress_monotone", False):
+            p = max(self._progress_floor, p)
+            self._progress_floor = p
 
         def _do_update():
             self.progress_bar["value"] = p
@@ -751,7 +829,7 @@ class CCDProcGUI:
 
 
 # =============================================================================
-# Fenêtre de visualisation d'images (section 5 Réduction) — inspirée de l'onglet Astéroïdes
+# Fenêtre de visualisation d'images (section 4 Réduction) — inspirée de l'onglet Astéroïdes
 # =============================================================================
 class ImageViewerWindow(Toplevel):
     """Fenêtre de visualisation des images FITS d'un répertoire avec navigation."""

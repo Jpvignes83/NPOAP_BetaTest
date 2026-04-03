@@ -17,9 +17,66 @@ from core.astrometry import AstrometrySolverNova, AstrometrySolverLocal, SolverC
 from utils.progress_manager import ProgressManager
 import shutil
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+
+class PipelineControl:
+    """Contrôle pause / reprise / arrêt entre étapes (thread-safe)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._stop_requested = False
+
+    def pause(self) -> None:
+        with self._lock:
+            self._pause_event.clear()
+
+    def resume(self) -> None:
+        with self._lock:
+            self._pause_event.set()
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop_requested = True
+
+    def reset(self) -> None:
+        with self._lock:
+            self._stop_requested = False
+            self._pause_event.set()
+
+    def wait_if_paused(self) -> None:
+        self._pause_event.wait()
+
+    def should_stop(self) -> bool:
+        with self._lock:
+            return self._stop_requested
+
+
+def _wcs_pixels_aligned(ref_wcs, img_wcs, shape, tol_arcsec: float = 1.0) -> bool:
+    """True si les 4 coins ont la même position ciel (~tol) entre les deux WCS."""
+    from astropy.coordinates import SkyCoord
+
+    h, w = int(shape[0]), int(shape[1])
+    if w < 2 or h < 2:
+        return False
+    corners = [
+        (1.0, 1.0),
+        (float(w - 1), 1.0),
+        (1.0, float(h - 1)),
+        (float(w - 1), float(h - 1)),
+    ]
+    for x, y in corners:
+        try:
+            s0 = ref_wcs.pixel_to_world(x, y)
+            s1 = img_wcs.pixel_to_world(x, y)
+            if s0.separation(s1).arcsec > tol_arcsec:
+                return False
+        except Exception:
+            return False
+    return True
 
 
 def _get_binning(header) -> tuple[int, int]:
@@ -150,19 +207,13 @@ def _check_binning_consistency(science_files, bias_files, dark_files, flat_files
     logger.info(f"Vérification binning OK (référence lights : {ref_bin[0]}x{ref_bin[1]}).")
 
 
-def _check_filter_consistency(science_files, flat_files) -> None:
+def _check_filter_consistency(science_files, flat_files) -> str | None:
     """
-    Vérifie que les filtres des flats correspondent à ceux des images science.
-    Les lights peuvent avoir plusieurs filtres ; chaque flat utilisé doit correspondre
-    à au moins un filtre présent dans les lights. On exige que chaque image science
-    ait un filtre égal à celui des flats (ou que les flats soient tous du même filtre
-    et que ce filtre soit présent dans les lights).
-    Règle simple : tous les flats doivent avoir le même filtre, et ce filtre doit
-    être égal à celui de chaque image science (ou on accepte si lights ont tous le
-    même filtre et flats aussi et ils sont égaux).
+    Vérifie la cohérence filtres lights / flats.
+    En cas d'incohérence : retourne un message d'avertissement (pas d'exception).
     """
     if not science_files or not flat_files:
-        return
+        return None
     # Filtres présents dans les lights (ensemble)
     light_filters = set()
     for path in science_files:
@@ -186,20 +237,20 @@ def _check_filter_consistency(science_files, flat_files) -> None:
 
     if not flat_filters:
         logger.warning("Aucune clé FILTER trouvée dans les flats ; vérification filtre ignorée.")
-        return
+        return None
     if not light_filters:
         logger.warning("Aucune clé FILTER trouvée dans les lights ; vérification filtre ignorée.")
-        return
+        return None
 
-    # Exigence : chaque filtre présent dans les flats doit être présent dans les lights
-    # (on utilise un master flat commun, donc en pratique on veut 1 filtre flat = 1 filtre light)
     if not flat_filters.issubset(light_filters):
-        raise ValueError(
-            "Filtre incohérent : les flats doivent avoir le même filtre que les images science.\n"
-            f"  Filtres dans les lights : {sorted(light_filters) or '(aucun)'} | "
-            f"Filtres dans les flats : {sorted(flat_filters)}."
+        msg = (
+            "Filtre incohérent entre lights et flats : le master flat sera quand même appliqué. "
+            f"Filtres lights : {sorted(light_filters) or '(aucun)'} | "
+            f"filtres flats : {sorted(flat_filters)}."
         )
-    # Si les lights ont plusieurs filtres mais les flats un seul, avertir
+        logger.warning(msg)
+        return f"⚠️ {msg}"
+
     if len(light_filters) > 1 and len(flat_filters) == 1:
         logger.warning(
             "Les lights contiennent plusieurs filtres (%s) alors que les flats n'en ont qu'un (%s). "
@@ -207,6 +258,7 @@ def _check_filter_consistency(science_files, flat_files) -> None:
             sorted(light_filters), next(iter(flat_filters)),
         )
     logger.info("Vérification filtre lights/flats OK.")
+    return None
 
 
 class ImageProcessor:
@@ -248,6 +300,11 @@ class ImageProcessor:
         """
         Calibration bias/dark/flat avec contrôles de cohérence (binning, filtre)
         et option de scaling des darks au temps d'exposition des lights (type AstroImageJ).
+
+        Returns
+        -------
+        str | None
+            Message d'avertissement filtres lights/flats si incohérence (calibration poursuivie), sinon None.
         """
         logging.info("Début de la calibration (ImageProcessor.process_calibration)")
 
@@ -260,11 +317,11 @@ class ImageProcessor:
             logging.warning("Aucun fichier science fourni.")
             if progress_callback:
                 progress_callback(0)
-            return
+            return None
 
-        # ─── Sécurités : binning et filtre ─────────────────────────────────
+        # ─── Sécurités : binning et filtre (filtre : avertissement seulement) ─
         _check_binning_consistency(science_files, bias_files, dark_files, flat_files)
-        _check_filter_consistency(science_files, flat_files)
+        filter_warn = _check_filter_consistency(science_files, flat_files)
 
         if progress_callback:
             progress_callback(0)
@@ -473,11 +530,14 @@ class ImageProcessor:
         else:
             logging.info("Calibration terminée avec succès !")
 
+        return filter_warn
+
     def process_astrometry(
-            self,
-            method: str = "NOVA",
-            progress_callback=None
-        ):
+        self,
+        method: str = "NOVA",
+        progress_callback=None,
+        pipeline_control: PipelineControl | None = None,
+    ):
         """
         Astrométrie des images calibrées.
 
@@ -511,44 +571,46 @@ class ImageProcessor:
             )
             logger.info("Initialisation du solveur AstrometryLocal (WSL)")
         else:
-            raise ValueError("method doit être 'NOVA' ou 'LOCAL'")
+            raise ValueError(
+                "Méthode d'astrométrie non supportée : utilisez uniquement 'NOVA' ou 'LOCAL' (WSL / solve-field)."
+            )
 
         total = len(calibrated_files)
         if progress_callback:
             progress_callback(0)
 
-        processed = 0
-        lock = threading.Lock()
+        if method == "NOVA":
+            solver.solve_directory(
+                calibrated_dir,
+                progress_callback=progress_callback,
+                pipeline_control=pipeline_control,
+            )
+            if pipeline_control and pipeline_control.should_stop():
+                logger.info("Astrométrie NOVA interrompue (Stop).")
+            else:
+                logger.info("Astrométrie NOVA terminée.")
+            return
 
-        def worker(f):
-            nonlocal processed
-            # On laisse solve_file faire son travail (pas de sous-callback pour éviter le bruit)
+        # LOCAL (WSL) : une image à la fois, pas de callback interne solve_file → barre stable
+        for idx, f in enumerate(calibrated_files):
+            if pipeline_control:
+                pipeline_control.wait_if_paused()
+                if pipeline_control.should_stop():
+                    logger.info("Astrométrie locale interrompue (Stop).")
+                    return
             solver.solve_file(f, progress_callback=None)
             if progress_callback:
-                with lock:
-                    processed += 1
-                    percent = int(processed / total * 100)
-                progress_callback(percent)
+                progress_callback(int((idx + 1) / total * 100))
 
-        # Réduire le parallélisme pour WSL (éviter la surcharge)
-        # LOCAL utilise WSL qui peut être lent, donc on limite à 2 threads max
-        if method == "LOCAL":
-            max_workers = min(2, total)  # Parallélisation limitée pour WSL
-            logger.info(f"Parallélisation limitée à {max_workers} threads pour WSL")
-        else:
-            max_workers = min(4, total)  # Parallélisation normale pour NOVA
-
-        if max_workers <= 1:
-            for f in calibrated_files:
-                worker(f)
-        else:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Consommer l'itérateur pour que les exceptions des workers remontent
-                list(executor.map(worker, calibrated_files))
-
-        logger.info(f"Astrométrie {method} terminée.")
+        logger.info("Astrométrie LOCAL terminée.")
         
-    def process_alignment_wcs(self, input_dir=None, output_dir=None, progress_callback=None):
+    def process_alignment_wcs(
+        self,
+        input_dir=None,
+        output_dir=None,
+        progress_callback=None,
+        pipeline_control: PipelineControl | None = None,
+    ):
         """
         Aligne les images FITS dans input_dir en utilisant les informations WCS.
         Les images alignées/reprojetées sont sauvegardées dans output_dir.
@@ -556,9 +618,8 @@ class ImageProcessor:
         input_dir = input_dir if input_dir else self.science_dir
         output_dir = output_dir if output_dir else self.aligned_dir
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         from astropy.wcs import WCS
-        # Import conditionnel de reproject
         try:
             from reproject import reproject_interp
         except ImportError:
@@ -569,53 +630,78 @@ class ImageProcessor:
         if not input_files:
             raise ValueError(f"Aucune image FITS résolue trouvée dans {input_dir}.")
 
-        # 1. Définir l'image de référence (la première, par exemple)
         ref_path = input_files[0]
-        with fits.open(ref_path) as hdul:
+        with fits.open(ref_path, memmap=True) as hdul:
             ref_wcs = WCS(hdul[0].header)
             ref_shape = hdul[0].data.shape
 
         logger.info(f"Début de l'alignement WCS sur {len(input_files)} fichiers.")
-        
+
         total = len(input_files)
-        
-        # 2. Boucle et reprojection réelle (corrige le décalage entre poses)
+
         for i, f_path in enumerate(input_files):
+            if pipeline_control:
+                pipeline_control.wait_if_paused()
+                if pipeline_control.should_stop():
+                    logger.info("Alignement WCS interrompu (Stop).")
+                    return
+
             try:
-                with fits.open(f_path) as hdul:
-                    data = hdul[0].data.astype(float)
+                with fits.open(f_path, memmap=True) as hdul:
+                    raw = hdul[0].data
                     hdr = hdul[0].header
                     current_wcs = WCS(hdr)
 
                 if i == 0:
-                    # Image de référence : pas de reprojection
-                    new_data = data
+                    new_data = np.asarray(raw, dtype=float)
                     new_hdr = hdr.copy()
                     new_hdr["HISTORY"] = "Aligned (reference) by ImageProcessor"
                 else:
-                    # Reprojection vers le WCS de référence (alignement réel)
-                    new_data, _footprint = reproject_interp(
-                        (data, current_wcs),
-                        ref_wcs,
-                        shape_out=ref_shape,
-                        order="bilinear",
-                    )
-                    # Conserver l'en-tête original de l'image (JD-UTC, BJD-TDB, DATE-OBS, etc.)
-                    # et ne mettre à jour que la partie WCS pour l'alignement
-                    new_hdr = hdr.copy()
-                    ref_wcs_hdr = ref_wcs.to_header()
-                    for key in ref_wcs_hdr:
+                    if _wcs_pixels_aligned(ref_wcs, current_wcs, raw.shape):
+                        new_data = np.asarray(raw, dtype=float)
+                        new_hdr = hdr.copy()
+                        ref_wcs_hdr = ref_wcs.to_header()
+                        for key in ref_wcs_hdr:
+                            try:
+                                new_hdr[key] = ref_wcs_hdr[key]
+                            except Exception:
+                                pass
+                        new_hdr["NAXIS"] = len(ref_shape)
+                        if len(ref_shape) >= 1:
+                            new_hdr["NAXIS1"] = ref_shape[1]
+                        if len(ref_shape) >= 2:
+                            new_hdr["NAXIS2"] = ref_shape[0]
+                        new_hdr["HISTORY"] = "Aligned (WCS corners match ref, no reproject) by ImageProcessor"
+                    else:
+                        arr_in = np.asarray(raw, dtype=float)
                         try:
-                            new_hdr[key] = ref_wcs_hdr[key]
-                        except Exception:
-                            pass
-                    # S'assurer que NAXIS/NAXIS1/NAXIS2 correspondent à la forme de sortie
-                    new_hdr["NAXIS"] = len(ref_shape)
-                    if len(ref_shape) >= 1:
-                        new_hdr["NAXIS1"] = ref_shape[1]
-                    if len(ref_shape) >= 2:
-                        new_hdr["NAXIS2"] = ref_shape[0]
-                    new_hdr["HISTORY"] = "Aligned (WCS reprojected) by ImageProcessor"
+                            new_data, _footprint = reproject_interp(
+                                (arr_in, current_wcs),
+                                ref_wcs,
+                                shape_out=ref_shape,
+                                order="bilinear",
+                                parallel=True,
+                            )
+                        except TypeError:
+                            new_data, _footprint = reproject_interp(
+                                (arr_in, current_wcs),
+                                ref_wcs,
+                                shape_out=ref_shape,
+                                order="bilinear",
+                            )
+                        new_hdr = hdr.copy()
+                        ref_wcs_hdr = ref_wcs.to_header()
+                        for key in ref_wcs_hdr:
+                            try:
+                                new_hdr[key] = ref_wcs_hdr[key]
+                            except Exception:
+                                pass
+                        new_hdr["NAXIS"] = len(ref_shape)
+                        if len(ref_shape) >= 1:
+                            new_hdr["NAXIS1"] = ref_shape[1]
+                        if len(ref_shape) >= 2:
+                            new_hdr["NAXIS2"] = ref_shape[0]
+                        new_hdr["HISTORY"] = "Aligned (WCS reprojected) by ImageProcessor"
 
                 out_path = output_dir / f_path.name
                 fits.writeto(out_path, new_data, new_hdr, overwrite=True)
@@ -629,7 +715,13 @@ class ImageProcessor:
 
         logger.info("Alignement WCS terminé.")
 
-    def process_stacking(self, input_files: list[Path], output_path: Path, progress_callback=None):
+    def process_stacking(
+        self,
+        input_files: list[Path],
+        output_path: Path,
+        progress_callback=None,
+        pipeline_control: PipelineControl | None = None,
+    ):
         """
         Empile (median stacking) les images de la liste fournie.
         """
@@ -637,25 +729,30 @@ class ImageProcessor:
             raise ValueError("Aucun fichier d'entrée fourni pour l'empilement.")
 
         logger.info(f"Début de l'empilement (median stacking) sur {len(input_files)} fichiers.")
-        
+
         stack = []
         total = len(input_files)
-        
+
         for i, f_path in enumerate(input_files):
+            if pipeline_control:
+                pipeline_control.wait_if_paused()
+                if pipeline_control.should_stop():
+                    raise RuntimeError("Empilement interrompu par l'utilisateur.")
             try:
-                data = fits.getdata(f_path, 0).astype(float)
-                stack.append(data)
+                try:
+                    data = fits.getdata(f_path, 0, memmap=True)
+                except TypeError:
+                    data = fits.getdata(f_path, 0)
+                stack.append(np.asarray(data, dtype=float))
             except Exception as e:
                 logger.error(f"Erreur lecture pour stacking {f_path.name}: {e}")
-            
+
             if progress_callback:
-                # 90% pour laisser 10% au calcul final
-                progress_callback(min(90, int((i + 1) / total * 90))) 
+                progress_callback(min(90, int((i + 1) / total * 90)))
 
         if not stack:
             raise ValueError("Aucune image valide n'a pu être lue pour l'empilement.")
 
-        # Calcul de la médiane
         median_stacked_data = np.median(np.array(stack, dtype=float), axis=0)
         
         # Copie de l'en-tête de la première image
