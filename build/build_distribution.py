@@ -426,12 +426,44 @@ class DistributionBuilder:
             shutil.copy2(requirements_file, out_file)
             print(f"  [OK] Copie requirements.txt (global)")
 
+    def _write_distribution_gitignore(self, output_dir: Path) -> None:
+        """Pour publication Git : ignorer config locale, données et caches."""
+        content = """# Local / secrets
+config.json
+.astrometry_api_key
+.env
+.venv/
+venv/
+
+# Données utilisateur et sorties
+output/
+*.fits
+*.fit
+*.log
+logs/*.log
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+"""
+        p = output_dir / ".gitignore"
+        p.write_text(content, encoding="utf-8")
+        print(f"  [OK] Ecrit {p.name} (pret pour depot Git de la distribution)")
+
     def _copy_full_installation_toolkit(self, output_dir: Path) -> None:
         """
         Profil full uniquement : copie a la racine de la distribution les scripts
         d'installation du depot (tests et options WSL, MSVC, Prospector, etc.).
         """
         root_names = [
+            'config.example.json',
             'installation.bat',
             'INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat',
             'INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1',
@@ -659,7 +691,6 @@ class DistributionBuilder:
             essential_docs.extend([
                 'PROTOCOLE_INSTALLATION_PROSPECTOR_WINDOWS.md',
                 'INSTALL_KBMOD_WSL.md',
-                'INSTALLATION_WATNEY.md',
             ])
         for doc in essential_docs:
             doc_file = self.base_path / 'docs' / doc
@@ -670,7 +701,8 @@ class DistributionBuilder:
 
         if profile_name == 'full':
             self._copy_full_installation_toolkit(output_dir)
-        
+            self._write_distribution_gitignore(output_dir)
+
         print(f"\n{'='*60}")
         print(f"[OK] Distribution '{profile_name}' construite avec succes!")
         print(f"  Repertoire: {output_dir}")
