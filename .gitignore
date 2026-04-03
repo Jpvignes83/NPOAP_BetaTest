@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.env
+*.egg-info/
+.eggs/
+dist/
+build/__pycache__/
+*.egg
+
+# Conda / caches
+.conda/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Journaux et sorties locales
+logs/
+*.log
+output/
+*.fits
+*.fit
+
+# Node (si présent à la racine)
+node_modules/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+*.swo
+
+# Fichiers temporaires / brouillons à la racine
+tmp_*.js
+tmp_*.html
+tmp_*.min.js
+
+# Archives, PDF et binaires lourds (GitHub / LFS si besoin)
+*.zip
+*.7z
+*.rar
+*.pdf
+build/distributions/
+
+# Clés, caches locaux et config (ne jamais versionner)
+config.json
+priors_cache.json
+pip
+.astrometry_api_key
+*.pem
+secrets.json
+
+# Logs embarqués (tiers)
+external_apps/**/runtime_logs/

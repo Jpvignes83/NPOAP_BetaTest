@@ -1,0 +1,21 @@
+{
+    "observatory": {
+        "name": "Mon observatoire",
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "elevation": 0.0,
+        "timezone": "UTC",
+        "lat": 0.0,
+        "lon": 0.0,
+        "elev": 0.0
+    },
+    "equipment": {
+        "telescope_diameter_mm": "200",
+        "focal_length_mm": "1000",
+        "sensor_width_mm": "0",
+        "sensor_height_mm": "0",
+        "pixel_size_um": "5.5"
+    },
+    "astrometry_api_key": "",
+    "affiliations": []
+}

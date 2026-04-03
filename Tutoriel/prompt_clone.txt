@@ -1,0 +1,3 @@
+objet du projet: créer un clone visuel et vocal de moi-même afin de présenter dans des vidéos un tutoriel au sujet d'un logiciel scientifique.
+à partir d'un enregistrement vidéo il faut que tu génère mon personnage avec comme caractéristiques : ton amical mais pas familier, il s'agit d'être pédagogique
+peux tu à partir d'un enregistrement  générer un clone  qui me permettra de dire un texte

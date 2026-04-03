@@ -1,0 +1,676 @@
+# core/image_processor.py
+import os
+import logging
+from pathlib import Path
+from astropy.io import fits
+import numpy as np
+from astropy.coordinates import (
+    EarthLocation,
+    SkyCoord,
+    solar_system_ephemeris,
+)
+from astropy.time import Time
+import astropy.units as u
+from config import OBSERVATORY
+from core.calculate_master import CalculateMaster
+from core.astrometry import AstrometrySolverNova, AstrometrySolverLocal, SolverConfig
+from utils.progress_manager import ProgressManager
+import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
+
+
+def _get_binning(header) -> tuple[int, int]:
+    """
+    Extrait le binning (x, y) depuis l'en-tête FITS.
+    Cherche XBINNING/YBINNING, BINAXIS1/BINAXIS2, ou CCDSUM (ex: "2x2").
+    Retourne (1, 1) si non trouvé.
+    """
+    h = header
+    # XBINNING / YBINNING (MaxIm DL, etc.)
+    x = h.get("XBINNING")
+    y = h.get("YBINNING")
+    if x is not None and y is not None:
+        try:
+            return (int(float(x)), int(float(y)))
+        except (TypeError, ValueError):
+            pass
+    # BINAXIS1 / BINAXIS2
+    x = h.get("BINAXIS1")
+    y = h.get("BINAXIS2")
+    if x is not None and y is not None:
+        try:
+            return (int(float(x)), int(float(y)))
+        except (TypeError, ValueError):
+            pass
+    # CCDSUM "1x1" ou "2x2"
+    ccdsum = h.get("CCDSUM", "")
+    if isinstance(ccdsum, str) and "x" in ccdsum.lower():
+        try:
+            parts = ccdsum.strip().lower().split("x")
+            if len(parts) >= 2:
+                return (int(float(parts[0].strip())), int(float(parts[1].strip())))
+        except (TypeError, ValueError):
+            pass
+    return (1, 1)
+
+
+def _get_filter(header) -> str:
+    """
+    Extrait le nom du filtre depuis l'en-tête FITS (FILTER, FILT, etc.).
+    Retourne une chaîne normalisée (strip, vide si absent).
+    """
+    for key in ("FILTER", "FILT", "FILTER1", "INSFLTNM"):
+        val = header.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
+def _get_exptime(header) -> float:
+    """
+    Extrait le temps d'exposition en secondes (EXPTIME, EXPOSURE).
+    Retourne 0.0 si absent ou invalide.
+    """
+    for key in ("EXPTIME", "EXPOSURE"):
+        val = header.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
+def _build_master_header(first_file, data_shape, exptime_override=None, obstype=None):
+    """
+    Construit un en-tête FITS minimal pour un master (bias/dark/flat)
+    afin qu'il soit réutilisable (binning, date, temps d'exposition).
+    """
+    hdr_src = fits.getheader(first_file, 0)
+    binx, biny = _get_binning(hdr_src)
+    exptime = _get_exptime(hdr_src) if exptime_override is None else exptime_override
+    date_obs = hdr_src.get("DATE-OBS") or hdr_src.get("DATE")
+    if not date_obs:
+        date_obs = Time.now().to_value("fits", subfmt="date")
+    ny, nx = data_shape[0], data_shape[1]
+    new_hdr = fits.Header()
+    new_hdr["SIMPLE"] = True
+    new_hdr["BITPIX"] = -32
+    new_hdr["NAXIS"] = 2
+    new_hdr["NAXIS1"] = nx
+    new_hdr["NAXIS2"] = ny
+    new_hdr["XBINNING"] = binx
+    new_hdr["YBINNING"] = biny
+    new_hdr["DATE-OBS"] = str(date_obs).strip()
+    new_hdr["EXPTIME"] = exptime
+    if obstype:
+        new_hdr["OBSTYPE"] = obstype
+    return new_hdr
+
+
+def _check_binning_consistency(science_files, bias_files, dark_files, flat_files) -> None:
+    """
+    Vérifie que toutes les images de calibration (bias, darks, flats) ont le même
+    binning que les images science. Lève ValueError avec message explicite si non.
+    """
+    if not science_files:
+        return
+    ref_header = fits.getheader(science_files[0], 0)
+    ref_bin = _get_binning(ref_header)
+
+    def check_set(files, label):
+        for path in (files or []):
+            try:
+                h = fits.getheader(path, 0)
+                bin_here = _get_binning(h)
+                # Anciens masters sans en-tête sont lus en 1x1 : les accepter si réutilisés (on suppose même binning que les lights)
+                is_master = (
+                    path.name.lower().startswith("master_")
+                    or str(h.get("OBSTYPE", "")).upper().startswith("MASTER")
+                )
+                if is_master and bin_here == (1, 1) and ref_bin != (1, 1):
+                    bin_here = ref_bin
+                if bin_here != ref_bin:
+                    raise ValueError(
+                        f"Binning incohérent : les images {label} doivent avoir le même binning que les lights.\n"
+                        f"  Lights (référence) : {ref_bin[0]}x{ref_bin[1]} | "
+                        f"{path.name} : {bin_here[0]}x{bin_here[1]}."
+                    )
+            except Exception as e:
+                if isinstance(e, ValueError):
+                    raise
+                logger.warning(f"Impossible de lire le binning de {path}: {e}")
+
+    check_set(bias_files, "bias")
+    check_set(dark_files, "darks")
+    check_set(flat_files, "flats")
+    logger.info(f"Vérification binning OK (référence lights : {ref_bin[0]}x{ref_bin[1]}).")
+
+
+def _check_filter_consistency(science_files, flat_files) -> None:
+    """
+    Vérifie que les filtres des flats correspondent à ceux des images science.
+    Les lights peuvent avoir plusieurs filtres ; chaque flat utilisé doit correspondre
+    à au moins un filtre présent dans les lights. On exige que chaque image science
+    ait un filtre égal à celui des flats (ou que les flats soient tous du même filtre
+    et que ce filtre soit présent dans les lights).
+    Règle simple : tous les flats doivent avoir le même filtre, et ce filtre doit
+    être égal à celui de chaque image science (ou on accepte si lights ont tous le
+    même filtre et flats aussi et ils sont égaux).
+    """
+    if not science_files or not flat_files:
+        return
+    # Filtres présents dans les lights (ensemble)
+    light_filters = set()
+    for path in science_files:
+        try:
+            h = fits.getheader(path, 0)
+            f = _get_filter(h)
+            if f:
+                light_filters.add(f)
+        except Exception as e:
+            logger.warning(f"Impossible de lire FILTER de {path}: {e}")
+    # Filtre(s) des flats
+    flat_filters = set()
+    for path in flat_files:
+        try:
+            h = fits.getheader(path, 0)
+            f = _get_filter(h)
+            if f:
+                flat_filters.add(f)
+        except Exception as e:
+            logger.warning(f"Impossible de lire FILTER de {path}: {e}")
+
+    if not flat_filters:
+        logger.warning("Aucune clé FILTER trouvée dans les flats ; vérification filtre ignorée.")
+        return
+    if not light_filters:
+        logger.warning("Aucune clé FILTER trouvée dans les lights ; vérification filtre ignorée.")
+        return
+
+    # Exigence : chaque filtre présent dans les flats doit être présent dans les lights
+    # (on utilise un master flat commun, donc en pratique on veut 1 filtre flat = 1 filtre light)
+    if not flat_filters.issubset(light_filters):
+        raise ValueError(
+            "Filtre incohérent : les flats doivent avoir le même filtre que les images science.\n"
+            f"  Filtres dans les lights : {sorted(light_filters) or '(aucun)'} | "
+            f"Filtres dans les flats : {sorted(flat_filters)}."
+        )
+    # Si les lights ont plusieurs filtres mais les flats un seul, avertir
+    if len(light_filters) > 1 and len(flat_filters) == 1:
+        logger.warning(
+            "Les lights contiennent plusieurs filtres (%s) alors que les flats n'en ont qu'un (%s). "
+            "Le même master flat sera appliqué à toutes les images.",
+            sorted(light_filters), next(iter(flat_filters)),
+        )
+    logger.info("Vérification filtre lights/flats OK.")
+
+
+class ImageProcessor:
+    def __init__(self, base_dir: str | Path, bash_path: str | None = None):
+        self.base_dir = Path(base_dir)
+        self.science_dir = self.base_dir / "science"
+        self.science_dir.mkdir(parents=True, exist_ok=True)
+        self.observatory = OBSERVATORY
+        self.output_dir = self.base_dir / "output"
+        self.calibrated_dir = self.output_dir / "calibrated"
+        self.astrometry_dir = self.output_dir / "astrometry"
+        self.aligned_dir = self.science_dir / "aligned"
+        for d in (self.calibrated_dir, self.astrometry_dir, self.aligned_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        # --- CORRECTION ICI : ON FORCE WSL ---
+        # On ne cherche plus cygwin. On assume que WSL est installé.
+        self.bash_path = "wsl" 
+        logger.info(f"Environnement configuré pour WSL (Ubuntu)")
+
+        # Position par défaut de l'observatoire (config.py)
+        # ... (le reste de l'init ne change pas) ...
+        lat = self.observatory["lat"]
+        lon = self.observatory["lon"]
+        elev = self.observatory["elev"]
+        self.location = EarthLocation(lat=float(lat) * u.deg,
+                              lon=float(lon) * u.deg,
+                              height=float(elev) * u.m)
+
+    def process_calibration(
+        self,
+        science_files,
+        bias_files=None,
+        dark_files=None,
+        flat_files=None,
+        progress_callback=None,
+        scale_darks=False,
+    ):
+        """
+        Calibration bias/dark/flat avec contrôles de cohérence (binning, filtre)
+        et option de scaling des darks au temps d'exposition des lights (type AstroImageJ).
+        """
+        logging.info("Début de la calibration (ImageProcessor.process_calibration)")
+
+        science_files = [Path(f) for f in (science_files or [])]
+        bias_files = [Path(f) for f in (bias_files or [])]
+        dark_files = [Path(f) for f in (dark_files or [])]
+        flat_files = [Path(f) for f in (flat_files or [])]
+
+        if not science_files:
+            logging.warning("Aucun fichier science fourni.")
+            if progress_callback:
+                progress_callback(0)
+            return
+
+        # ─── Sécurités : binning et filtre ─────────────────────────────────
+        _check_binning_consistency(science_files, bias_files, dark_files, flat_files)
+        _check_filter_consistency(science_files, flat_files)
+
+        if progress_callback:
+            progress_callback(0)
+
+        # ─── Helpers ─────────────────────────────────────────────────────
+        def build_master(files, bias=None, dark=None, dark_exptime_ref=0.0, scale_dark_by_exptime=False):
+            stack = []
+            for f in files:
+                try:
+                    data = fits.getdata(f, 0).astype(float)
+                    hdr = fits.getheader(f, 0)
+                    if bias is not None:
+                        data -= bias
+                    if dark is not None:
+                        dark_to_subtract = dark
+                        if scale_dark_by_exptime and dark_exptime_ref > 0:
+                            frame_exptime = _get_exptime(hdr)
+                            if frame_exptime > 0:
+                                dark_to_subtract = dark * (frame_exptime / dark_exptime_ref)
+                            else:
+                                logger.warning(
+                                    f"{Path(f).name} : EXPTIME absent/nul, dark non scalé pour construction master."
+                                )
+                        data -= dark_to_subtract
+                    stack.append(data)
+                except Exception as e:
+                    logging.error(f"Erreur lecture {f}: {e}")
+            return np.median(np.array(stack, dtype=float), axis=0) if stack else None
+
+        def _dark_exptime(files):
+            """Temps d'exposition des darks (médiane des EXPTIME)."""
+            if not files:
+                return 0.0
+            times = []
+            for f in files:
+                try:
+                    t = _get_exptime(fits.getheader(f, 0))
+                    if t > 0:
+                        times.append(t)
+                except Exception:
+                    pass
+            return float(np.median(times)) if times else 0.0
+
+        def _parse_date_obs(date_str):
+            date_str = str(date_str).strip()
+            if not date_str:
+                return None
+            for fmt in ("isot", "fits"):
+                try:
+                    return Time(date_str, format=fmt, scale="utc")
+                except:
+                    continue
+            logging.error(f"DATE-OBS illisible : {date_str}")
+            return None
+
+        # ─── Création des masters ───────────────────────────────────────
+        master_bias = build_master(bias_files)
+        master_dark = build_master(dark_files, bias=master_bias)
+        dark_exptime = _dark_exptime(dark_files) if dark_files else 0.0
+        if scale_darks and master_dark is not None and dark_exptime <= 0:
+            logging.warning("Scale darks activé mais EXPTIME des darks introuvable ; scaling désactivé pour les darks.")
+            scale_darks = False
+        if scale_darks and dark_exptime > 0:
+            logger.info(f"Scaling des darks activé (temps de référence dark : {dark_exptime:.2f} s).")
+        master_flat = build_master(
+            flat_files,
+            bias=master_bias,
+            dark=master_dark,
+            dark_exptime_ref=dark_exptime,
+            scale_dark_by_exptime=bool(scale_darks),
+        )
+
+        if master_flat is not None:
+            mean_flat = np.mean(master_flat[master_flat > 0])
+            if mean_flat > 0:
+                master_flat /= mean_flat
+
+        # Sauvegarde des masters avec en-tête FITS minimal (binning, date, EXPTIME) pour réutilisation
+        try:
+            if master_bias is not None and bias_files:
+                hdr_bias = _build_master_header(
+                    bias_files[0], master_bias.shape, exptime_override=0.0, obstype="MASTER_BIAS"
+                )
+                fits.writeto(self.output_dir / "master_bias.fits", master_bias, hdr_bias, overwrite=True)
+            if master_dark is not None and dark_files:
+                hdr_dark = _build_master_header(
+                    dark_files[0], master_dark.shape, exptime_override=dark_exptime, obstype="MASTER_DARK"
+                )
+                fits.writeto(self.output_dir / "master_dark.fits", master_dark, hdr_dark, overwrite=True)
+            if master_flat is not None and flat_files:
+                hdr_flat = _build_master_header(
+                    flat_files[0], master_flat.shape, exptime_override=None, obstype="MASTER_FLAT"
+                )
+                fits.writeto(self.output_dir / "master_flat.fits", master_flat, hdr_flat, overwrite=True)
+        except Exception as e:
+            logging.warning(f"Erreur sauvegarde masters : {e}")
+
+        # ─── Traitement image par image ─────────────────────────────────
+        total = len(science_files)
+        failed_files = []
+        for i, f in enumerate(science_files, 1):
+            try:
+                data = fits.getdata(f, 0).astype(float)
+                hdr = fits.getheader(f, 0)
+
+                # Calibration classique
+                if master_bias is not None:
+                    data -= master_bias
+                if master_dark is not None:
+                    if scale_darks and dark_exptime > 0:
+                        science_exptime = _get_exptime(hdr)
+                        if science_exptime > 0:
+                            scale = science_exptime / dark_exptime
+                            data -= master_dark * scale
+                        else:
+                            data -= master_dark
+                            logging.warning(f"{f.name} : EXPTIME absent ou nul, dark non scalé.")
+                    else:
+                        data -= master_dark
+                if master_flat is not None:
+                    mask = master_flat != 0
+                    data[mask] /= master_flat[mask]
+
+                hdr["HISTORY"] = "Calibrated (bias/dark/flat) by ImageProcessor"
+
+                # ──────── JD-UTC + BJD-TDB ─────────────────────────────────────
+                date_obs_str = hdr.get("DATE-OBS")
+
+                if date_obs_str:
+                    date_obs = _parse_date_obs(date_obs_str)
+
+                    if date_obs:
+                        exptime = float(hdr.get("EXPTIME", 0))
+
+                        # ---- Création UTC midpoint AVEC localisation (future-proof Astropy)
+                        midpoint = Time(
+                            date_obs.utc + (exptime / 2.0) * u.s,
+                            scale="utc",
+                            location=self.location
+                        )
+
+                        # ---- JD-UTC ----
+                        hdr["JD-UTC"] = (midpoint.jd, "Julian Date (UTC) at mid-exposure")
+
+                        # ---- Parsing RA/DEC ----
+                        target = None
+                        try:
+                            ra_str = hdr.get("OBJCTRA")
+                            dec_str = hdr.get("OBJCTDEC")
+                            if ra_str and dec_str:
+                                target = SkyCoord(
+                                    ra_str,
+                                    dec_str,
+                                    unit=(u.hourangle, u.deg),
+                                    frame="icrs"
+                                )
+                        except Exception as e:
+                            logging.debug(f"{f.name} : erreur parsing RA/DEC : {e}")
+
+                        # ---- Calcul du BJD-TDB ----
+                        if target:
+                            try:
+                                # Conversion du temps en TDB (avec localisation déjà incluse)
+                                midpoint_tdb = midpoint.tdb
+
+                                # Correction barycentrique (LTT)
+                                with solar_system_ephemeris.set("builtin"):
+                                    ltt = midpoint_tdb.light_travel_time(target)
+
+                                bjd_tdb = midpoint_tdb + ltt
+
+                                # Stockage en JD : format correct pour BJD-TDB FITS
+                                hdr["BJD-TDB"] = (bjd_tdb.jd, "Barycentric Julian Date (TDB)")
+
+                            except Exception as e_bjd:
+                                logging.warning(f"Échec calcul BJD-TDB pour {f.name}: {e_bjd}")
+
+                # ─── Sauvegarde image calibrée ─────────────────────────────────
+                out_path = self.calibrated_dir / f.name
+                fits.writeto(out_path, data, hdr, overwrite=True)
+                logging.info(f"Image calibrée : {out_path}")
+
+            except Exception as e:
+                logging.error(f"Erreur calibration {f.name} : {e}")
+                failed_files.append(f.name)
+
+            # Progression
+            if progress_callback:
+                progress_callback(min(100, int(i / total * 100)))
+
+        if failed_files:
+            failed_count = len(failed_files)
+            fail_ratio = failed_count / float(total) if total else 1.0
+            preview = ", ".join(failed_files[:5])
+            if failed_count > 5:
+                preview += ", ..."
+            summary = (
+                f"Calibration terminée avec {failed_count} échec(s) sur {total} image(s). "
+                f"Fichiers en échec: {preview}"
+            )
+            # Seuil bloquant: au-delà de 20% d'échecs, on force un arrêt explicite.
+            if fail_ratio > 0.20:
+                logging.error(summary)
+                raise RuntimeError(summary)
+            logging.warning(summary)
+        else:
+            logging.info("Calibration terminée avec succès !")
+
+    def process_astrometry(
+            self,
+            method: str = "NOVA",
+            progress_callback=None
+        ):
+        """
+        Astrométrie des images calibrées.
+
+        - Les images d'entrée sont prises dans self.calibrated_dir
+        - Pour la méthode LOCAL :
+            * solve-field travaille sur les images calibrées
+            * les images astrométrées finales sont enregistrées dans self.science_dir
+        - La progression est renvoyée via progress_callback (0–100).
+        """
+        calibrated_dir = self.calibrated_dir
+        calibrated_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"📂 Astrométrie sur le dossier calibré : {calibrated_dir}")
+
+        calibrated_files = sorted(calibrated_dir.glob("*.fits"))
+        if not calibrated_files:
+            raise ValueError("Aucune image calibrée. Impossible de lancer l'astrométrie.")
+
+        # ----------------------- choix du solveur -----------------------
+        method = method.upper()
+
+        if method == "NOVA":
+            # NOVA travaille directement sur les images calibrées
+            solver = AstrometrySolverNova(output_dir=self.astrometry_dir)
+
+        elif method == "LOCAL":
+            # Version simplifiée pour WSL
+            solver = AstrometrySolverLocal(
+                science_dir=self.science_dir,
+                config=SolverConfig() # Utilise la config par défaut
+            )
+            logger.info("Initialisation du solveur AstrometryLocal (WSL)")
+        else:
+            raise ValueError("method doit être 'NOVA' ou 'LOCAL'")
+
+        total = len(calibrated_files)
+        if progress_callback:
+            progress_callback(0)
+
+        processed = 0
+        lock = threading.Lock()
+
+        def worker(f):
+            nonlocal processed
+            # On laisse solve_file faire son travail (pas de sous-callback pour éviter le bruit)
+            solver.solve_file(f, progress_callback=None)
+            if progress_callback:
+                with lock:
+                    processed += 1
+                    percent = int(processed / total * 100)
+                progress_callback(percent)
+
+        # Réduire le parallélisme pour WSL (éviter la surcharge)
+        # LOCAL utilise WSL qui peut être lent, donc on limite à 2 threads max
+        if method == "LOCAL":
+            max_workers = min(2, total)  # Parallélisation limitée pour WSL
+            logger.info(f"Parallélisation limitée à {max_workers} threads pour WSL")
+        else:
+            max_workers = min(4, total)  # Parallélisation normale pour NOVA
+
+        if max_workers <= 1:
+            for f in calibrated_files:
+                worker(f)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Consommer l'itérateur pour que les exceptions des workers remontent
+                list(executor.map(worker, calibrated_files))
+
+        logger.info(f"Astrométrie {method} terminée.")
+        
+    def process_alignment_wcs(self, input_dir=None, output_dir=None, progress_callback=None):
+        """
+        Aligne les images FITS dans input_dir en utilisant les informations WCS.
+        Les images alignées/reprojetées sont sauvegardées dans output_dir.
+        """
+        input_dir = input_dir if input_dir else self.science_dir
+        output_dir = output_dir if output_dir else self.aligned_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        from astropy.wcs import WCS
+        # Import conditionnel de reproject
+        try:
+            from reproject import reproject_interp
+        except ImportError:
+            logger.error("Module 'reproject' manquant. Installez-le avec 'pip install reproject'")
+            raise
+
+        input_files = sorted(input_dir.glob("*.fits"))
+        if not input_files:
+            raise ValueError(f"Aucune image FITS résolue trouvée dans {input_dir}.")
+
+        # 1. Définir l'image de référence (la première, par exemple)
+        ref_path = input_files[0]
+        with fits.open(ref_path) as hdul:
+            ref_wcs = WCS(hdul[0].header)
+            ref_shape = hdul[0].data.shape
+
+        logger.info(f"Début de l'alignement WCS sur {len(input_files)} fichiers.")
+        
+        total = len(input_files)
+        
+        # 2. Boucle et reprojection réelle (corrige le décalage entre poses)
+        for i, f_path in enumerate(input_files):
+            try:
+                with fits.open(f_path) as hdul:
+                    data = hdul[0].data.astype(float)
+                    hdr = hdul[0].header
+                    current_wcs = WCS(hdr)
+
+                if i == 0:
+                    # Image de référence : pas de reprojection
+                    new_data = data
+                    new_hdr = hdr.copy()
+                    new_hdr["HISTORY"] = "Aligned (reference) by ImageProcessor"
+                else:
+                    # Reprojection vers le WCS de référence (alignement réel)
+                    new_data, _footprint = reproject_interp(
+                        (data, current_wcs),
+                        ref_wcs,
+                        shape_out=ref_shape,
+                        order="bilinear",
+                    )
+                    # Conserver l'en-tête original de l'image (JD-UTC, BJD-TDB, DATE-OBS, etc.)
+                    # et ne mettre à jour que la partie WCS pour l'alignement
+                    new_hdr = hdr.copy()
+                    ref_wcs_hdr = ref_wcs.to_header()
+                    for key in ref_wcs_hdr:
+                        try:
+                            new_hdr[key] = ref_wcs_hdr[key]
+                        except Exception:
+                            pass
+                    # S'assurer que NAXIS/NAXIS1/NAXIS2 correspondent à la forme de sortie
+                    new_hdr["NAXIS"] = len(ref_shape)
+                    if len(ref_shape) >= 1:
+                        new_hdr["NAXIS1"] = ref_shape[1]
+                    if len(ref_shape) >= 2:
+                        new_hdr["NAXIS2"] = ref_shape[0]
+                    new_hdr["HISTORY"] = "Aligned (WCS reprojected) by ImageProcessor"
+
+                out_path = output_dir / f_path.name
+                fits.writeto(out_path, new_data, new_hdr, overwrite=True)
+                logger.info(f"Image alignée (WCS): {out_path.name}")
+
+            except Exception as e:
+                logger.error(f"Erreur alignment {f_path.name}: {e}")
+
+            if progress_callback:
+                progress_callback(min(100, int((i + 1) / total * 100)))
+
+        logger.info("Alignement WCS terminé.")
+
+    def process_stacking(self, input_files: list[Path], output_path: Path, progress_callback=None):
+        """
+        Empile (median stacking) les images de la liste fournie.
+        """
+        if not input_files:
+            raise ValueError("Aucun fichier d'entrée fourni pour l'empilement.")
+
+        logger.info(f"Début de l'empilement (median stacking) sur {len(input_files)} fichiers.")
+        
+        stack = []
+        total = len(input_files)
+        
+        for i, f_path in enumerate(input_files):
+            try:
+                data = fits.getdata(f_path, 0).astype(float)
+                stack.append(data)
+            except Exception as e:
+                logger.error(f"Erreur lecture pour stacking {f_path.name}: {e}")
+            
+            if progress_callback:
+                # 90% pour laisser 10% au calcul final
+                progress_callback(min(90, int((i + 1) / total * 90))) 
+
+        if not stack:
+            raise ValueError("Aucune image valide n'a pu être lue pour l'empilement.")
+
+        # Calcul de la médiane
+        median_stacked_data = np.median(np.array(stack, dtype=float), axis=0)
+        
+        # Copie de l'en-tête de la première image
+        first_hdr = fits.getheader(input_files[0], 0)
+        first_hdr['HISTORY'] = 'Median Stacked by ImageProcessor'
+        first_hdr['N_STACK'] = (len(stack), 'Number of frames stacked')
+
+        # Sauvegarde
+        fits.writeto(output_path, median_stacked_data, first_hdr, overwrite=True)
+        logger.info(f"Image empilée sauvegardée : {output_path}")
+
+        if progress_callback:
+            progress_callback(100)
+
+        logger.info("Empilement terminé avec succès.")
+
+
+

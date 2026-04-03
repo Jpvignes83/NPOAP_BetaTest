@@ -1,0 +1,541 @@
+Manuel d'Installation NPOAP
+NPOAP - Nouvelle Plateforme d'Observation et d'Analyse Photométrique
+Version 1.0
+
+[REFERENCE] La version maintenue et détaillée est docs/MANUEL_INSTALLATION.md (Markdown).
+Ce fichier texte est un résumé ; en cas de divergence, suivre le .md.
+---
+Table des matières
+Prérequis système
+Installation de Python et Conda
+Création de l'environnement Conda
+Installation des dépendances Python
+Installation des dépendances supplémentaires
+Installation d'Astrometry.net (optionnel)
+Configuration initiale
+Vérification de l'installation
+Lancement de l'application
+Dépannage
+Remerciements (Acknowledgments)
+---
+1. Prérequis système
+Système d'exploitation
+NPOAP est compatible avec :
+Windows 10/11 (testé et recommandé)
+Linux (Ubuntu 20.04+, Debian 11+, etc.)
+macOS (10.15+)
+Mémoire et espace disque
+RAM : Minimum 4 Go (8 Go recommandé)
+Espace disque : 2 Go minimum pour l'installation complète
+Processeur : Processeur multi-cœurs recommandé pour les traitements par lots
+Logiciels requis
+Python 3.11+ (3.11 recommandé, aligné sur l’environnement astroenv)
+Conda (Miniconda ou Anaconda) - Recommandé pour la gestion des environnements
+Git (optionnel, pour cloner le dépôt)
+---
+2. Installation de Python et Conda
+Option A : Installation avec Conda (RECOMMANDÉ)
+Conda facilite la gestion des dépendances et des environnements Python.
+Télécharger Miniconda :
+Windows : https://docs.conda.io/en/latest/miniconda.html
+Sélectionnez la version Python 3.11
+Exécutez l'installateur et suivez les instructions
+Vérifier l'installation :
+```cmd
+   conda --version
+   python --version
+   ```
+Option B : Installation avec Python seul
+Si vous préférez utiliser Python sans Conda :
+Télécharger Python :
+Site officiel : https://www.python.org/downloads/
+Version 3.11 recommandée
+Important : Cochez "Add Python to PATH" lors de l'installation
+Installer pip (généralement inclus) :
+```cmd
+   python --version
+   pip --version
+   ```
+---
+3. Création de l'environnement Conda
+Avec Conda (Recommandé)
+Ouvrir un terminal Anaconda Prompt (Windows) ou terminal (Linux/macOS)
+Créer un nouvel environnement nommé `astroenv` :
+```cmd
+   conda create -n astroenv python=3.11
+   ```
+Important : N'oubliez pas l'option `-n` (ou `--name`) pour spécifier le nom de l'environnement. Sans cette option, conda affichera une erreur.
+Activer l'environnement :
+```cmd
+   conda activate astroenv
+   ```
+Avec Python seul (venv)
+Naviguer vers le répertoire NPOAP :
+```cmd
+   cd C:\Users\VotreNom\Documents\NPOAP
+   ```
+Créer un environnement virtuel :
+```cmd
+   python -m venv venv
+   ```
+Activer l'environnement :
+Windows (venv) :
+```cmd
+     venv\Scripts\activate
+     ```
+Linux/macOS :
+```bash
+     source venv/bin/activate
+     ```
+---
+4. Installation des dépendances Python
+Méthode recommandée : requirements.txt
+S'assurer que l'environnement est activé :
+```cmd
+   conda activate astroenv
+   # ou
+   venv\Scripts\activate  # si vous utilisez venv
+   ```
+Mettre à jour pip :
+```cmd
+   python -m pip install --upgrade pip
+   ```
+Installer les dépendances :
+```cmd
+   pip install -r requirements.txt
+   ```
+Cette commande installe toutes les dépendances requises (astropy, photutils, ccdproc, reproject, exotethys, specutils, stdpipe, ezpadova via git, etc.).
+KBMOD : si requirements.txt contient la ligne kbmod @ git+... et que pip échoue sous Windows natif, commentez cette ligne, réinstallez le reste, puis installez KBMOD dans WSL (docs/INSTALL_KBMOD_WSL.md, requirements-kbmod.txt).
+Installation manuelle des dépendances
+Si vous préférez installer manuellement :
+```cmd
+pip install numpy>=1.20.0
+pip install scipy>=1.7.0
+pip install pandas>=1.3.0
+pip install astropy>=5.0.0
+pip install photutils>=1.6.0
+pip install astroquery>=0.4.6
+pip install matplotlib>=3.5.0
+pip install requests>=2.25.0
+pip install Pillow>=9.0.0
+pip install emcee>=3.1.0
+pip install phoebe>=2.4.0
+pip install reportlab>=3.6.0
+pip install pylightcurve>=1.0.0
+pip install statsmodels>=0.13.0
+```
+Installation sur Linux : dépendances système
+Sur Linux, vous devrez peut-être installer certaines dépendances système :
+Ubuntu/Debian :
+```bash
+sudo apt-get update
+sudo apt-get install python3-tk python3-dev build-essential
+```
+Fedora/CentOS :
+```bash
+sudo dnf install python3-tkinter python3-devel gcc gcc-c++
+```
+---
+5. Installation des dépendances optionnelles
+PHOEBE2 (Étoiles Binaires)
+PHOEBE2 permet la modélisation d'étoiles binaires à éclipses.
+Sur Windows
+ATTENTION : PHOEBE2 nécessite Microsoft Visual C++ Build Tools pour compiler.
+Installer Microsoft Visual C++ Build Tools :
+Téléchargez depuis : https://visualstudio.microsoft.com/visual-cpp-build-tools/
+Installez "Desktop development with C++" workload
+Composants essentiels :
+MSVC v143 - VS 2022 C++ x64/x86 build tools
+Windows 10/11 SDK
+C++ CMake tools for Windows
+a/.Installer PHOEBE2 :
+```cmd
+   conda activate astroenv
+   pip install phoebe
+   ```
+Si l'installation échoue, voir la section Dépannage.
+Sur Linux/macOS
+```bash
+conda activate astroenv
+pip install phoebe
+```
+b/.Prospector (Analyse de Spectres de Galaxies - Optionnel)
+Prospector est un outil Python pour inférer les propriétés stellaires à partir de données spectroscopiques et photométriques (SED - Spectral Energy Distribution). Il utilise l'inférence bayésienne avec des modèles de populations stellaires simples (SSP).
+Installation de Prospector
+IMPORTANT : Prospector doit être installé depuis GitHub, pas depuis PyPI. Le package `prospector` sur PyPI est un autre outil (analyse de code Python).
+Méthode recommandée : Utiliser le script d'installation automatique :
+```cmd
+# Script Batch (Windows)
+INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
+
+# Script PowerShell (Windows - alternative)
+.\INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1
+```
+Installation manuelle :
+```cmd
+conda activate astroenv
+
+# 1. Installer les dépendances de base
+pip install numpy>=1.20.0 scipy>=1.7.0 pandas>=1.3.0 astropy>=5.0.0
+
+# 2. Installer sedpy depuis GitHub (IMPORTANT: pas PyPI)
+pip uninstall sedpy -y
+pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+# 3. Installer les autres dépendances
+pip install dynesty>=2.0.0 dill>=0.3.0 h5py>=3.0.0 emcee>=3.1.0
+
+# 4. Installer Prospector depuis GitHub
+pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+```
+Vérification :
+```cmd
+python -c "import prospect; from prospect.models import SpecModel; print('Prospector OK!')"
+```
+c/.FSPS (Flexible Stellar Population Synthesis) : Optionnel mais recommandé pour les fonctionnalités avancées. FSPS nécessite CMake et gfortran sur Windows. Pour une installation plus simple, utilisez WSL (voir `docs/PROTOCOLE_INSTALLATION_PROSPECTOR_WINDOWS.md`).
+Note : Si FSPS n'est pas installé, Prospector fonctionne avec des fichiers stub créés automatiquement, mais certaines fonctionnalités avancées seront limitées.
+Pour plus de détails, consultez `docs/PROTOCOLE_INSTALLATION_PROSPECTOR_WINDOWS.md`.
+
+d/.CuPy (Accélération GPU - Optionnel - NON REQUIS)
+CuPy permet d'accélérer certains calculs astrométriques avec une carte graphique NVIDIA, notamment la détection d'étoiles dans l'onglet Photométrie Astéroïdes (astrométrie zero-aperture).
+Cartes compatibles :
+NVIDIA GeForce GTX 1660 Ti ✅ (et autres cartes NVIDIA avec support CUDA)
+Architecture Turing (Compute Capability 7.5)
+Toutes les cartes NVIDIA récentes (GTX 1000+, RTX série)
+Prérequis :
+Carte graphique NVIDIA avec support CUDA
+CUDA Toolkit installé (version 11.x ou 12.x recommandée)
+Étape 1 : Vérifier votre version CUDA
+Ouvrir le gestionnaire de périphériques Windows :
+Appuyez sur `Win + X` et sélectionnez "Gestionnaire de périphériques"
+Développez "Adaptateurs d'affichage"
+Vérifiez que votre carte NVIDIA est reconnue (ex: "NVIDIA GeForce GTX 1660 Ti")
+Vérifier la version CUDA installée :
+```cmd
+   nvidia-smi
+   ```
+La version CUDA apparaît en haut à droite (ex: "CUDA Version: 12.2")
+Si `nvidia-smi` n'est pas reconnu, installez les pilotes NVIDIA depuis https://www.nvidia.com/drivers/
+Si CUDA n'est pas installé :
+Téléchargez CUDA Toolkit depuis https://developer.nvidia.com/cuda-downloads
+Pour GTX 1660 Ti, CUDA 11.8 ou 12.x est recommandé
+Installez le toolkit CUDA (suivez les instructions du site NVIDIA)
+Étape 2 : Installer CuPy
+Une fois CUDA installé, installez CuPy correspondant à votre version CUDA :
+Pour CUDA 12.x  :
+```cmd
+pip install cupy-cuda12x
+```
+Pour CUDA 13.x (CUDA 13.0+) :
+```cmd
+pip install cupy-cuda13x
+```
+Vérification de l'installation :
+```cmd
+python -c "import cupy as cp; print(f'CuPy {cp.__version__} installé'); print(f'GPU disponible: {cp.cuda.is_available()}'); print(f'GPU: {cp.cuda.Device(0).compute_capability if cp.cuda.is_available() else \"N/A\"}')"
+```
+Si l'installation réussit, vous verrez :
+```
+CuPy 13.x.x installé
+GPU disponible: True
+GPU: (7, 5)
+```
+Note : CuPy est optionnel. L'application fonctionne sans GPU, mais sera plus lente pour certaines opérations d'astrométrie (détection d'étoiles dans les images). Pour la GTX 1660 Ti, l'accélération GPU peut améliorer les performances de 2-5x pour la détection d'étoiles sur de grandes images.
+Métadonnées pip : si import cupy lève AttributeError _detect_duplicate_installation, main.py et test_installation.py appliquent un correctif ; voir Dépannage dans MANUEL_INSTALLATION.md.
+
+e/. ezpadova / PARSEC (Analyse d'amas - Optionnel)
+L'onglet Analyse d'amas permet d'estimer l'âge et la distance d'un amas (diagramme couleur-magnitude G, G_BP, G_RP). Pour utiliser les isochrones PARSEC (modèle Padova), installez ezpadova depuis GitHub (ezpadova n'est pas sur PyPI ; Git doit être dans le PATH) :
+```cmd
+conda activate astroenv
+pip install git+https://github.com/mfouesneau/ezpadova
+```
+Sans ezpadova, l'estimation d'âge utilise une grille empirique. Vérification : python -c "import ezpadova; print('ezpadova OK')"
+
+---
+6. Installation d'Astrometry.net (Optionnel) [ne pas confondre avec NOVA.Astrometry.net qui nécessite internet et une clé]
+Astrometry.net permet l'astrométrie locale (sans connexion internet).
+Sur Windows (via WSL)
+Installer WSL (Windows Subsystem for Linux) :
+```powershell
+   wsl --install
+   ```
+Redémarrez votre ordinateur après l'installation.
+Installer Ubuntu dans WSL :
+Après le redémarrage, configurez Ubuntu
+Créez un nom d'utilisateur et un mot de passe
+Installer Astrometry.net dans WSL :
+```bash
+   sudo apt-get update
+   sudo apt-get install astrometry.net
+   ```
+Télécharger les index (optionnel mais recommandé) :
+Les index sont volumineux (plusieurs Go)
+Consultez : http://astrometry.net/doc/readme.html#getting-index-files
+Placez-les dans `/usr/share/astrometry/data/` dans WSL
+Sur Linux
+```bash
+sudo apt-get update
+sudo apt-get install astrometry.net
+```
+Sur macOS
+```bash
+brew install astrometry-net
+```
+Note : Astrometry.net est optionnel. L'application peut utiliser Astrometry.net en ligne (NOVA) si vous avez une clé API.
+---
+7. Configuration initiale
+télécharger NPOAP :
+extrayez l'archive ZIP NPOAP_XXXXXX_XXXX.ZIP
+Vérifier la structure des fichiers :
+```
+   NPOAP/
+   ├── main.py
+   ├── requirements.txt
+   ├── config.py
+   ├── gui/
+   ├── core/
+   └── utils/
+   ```
+Configuration de la clé API Astrometry.net (optionnel) :
+Lancez l'application (voir section 9)
+Allez dans l'onglet "Accueil"
+Entrez votre clé API Astrometry.net (obtenue sur https://nova.astrometry.net/)
+Cliquez sur "Sauvegarder"
+---
+8. Vérification de l'installation
+Vérifier les dépendances Python
+Le script test_installation.py est fourni à la racine du projet : il vérifie les modules requis/optionnels et applique le même correctif importlib.metadata que main.py pour CuPy.
+Exécutez dans astroenv, depuis le dossier NPOAP :
+```cmd
+python test_installation.py
+```
+Vérifier Astrometry.net (si installé)
+Dans WSL (Windows) ou terminal (Linux) :
+```bash
+solve-field --version
+```
+---
+9. Lancement de l'application
+Méthode 1 : Script batch (Windows - Conda)
+Un script `LANCER_NPOAP_ASTROENV.bat` est fourni :
+```cmd
+LANCER_NPOAP_ASTROENV.bat
+```
+Méthode 2 : Commande manuelle
+Activer l'environnement :
+```cmd
+   conda activate astroenv
+   # ou
+   venv\Scripts\activate
+   ```
+Lancer l'application :
+```cmd
+   cd C:\Users\VotreNom\Documents\NPOAP
+   python main.py
+   ```
+Méthode 3 : Depuis Python (développement)
+Préférer python main.py pour le correctif CuPy en tête de main.
+```python
+from gui.main_window import MainWindow
+import tkinter as tk
+import utils.logging_handler as logging_handler
+
+logging_handler.setup_logging()
+root = tk.Tk()
+app = MainWindow(root)
+root.mainloop()
+```
+---
+10. Dépannage
+Erreur : "ModuleNotFoundError: No module named 'tkinter'"
+Windows : tkinter devrait être inclus. Si l'erreur persiste, réinstallez Python et cochez "tcl/tk and IDLE".
+Linux :
+```bash
+sudo apt-get install python3-tk
+```
+macOS : tkinter devrait être inclus avec Python.
+Erreur lors de l'installation de PHOEBE2 sur Windows
+Erreur : "Microsoft Visual C++ 14.0 or greater is required"
+Solution :
+Installez Microsoft Visual C++ Build Tools (voir section 5.1)
+Redémarrez votre ordinateur
+Réessayez : `pip install phoebe`
+Alternative : Utilisez conda :
+```cmd
+conda install -c conda-forge phoebe
+```
+Erreur : "CRASH WSL (Code 1)" lors de l'astrométrie locale
+Causes possibles :
+Astrometry.net n'est pas installé dans WSL
+Les index ne sont pas téléchargés
+Problème de permissions
+Solution :
+Vérifiez l'installation dans WSL : `wsl solve-field --version`
+Testez manuellement : `wsl solve-field image.fits`
+Vérifiez les logs dans le dossier `logs/`
+Erreur : "No module named 'readline'" (PHOEBE2 sur Windows)
+Cette erreur est normale sur Windows. Elle est gérée automatiquement par l'application. Si vous la voyez, l'application devrait quand même fonctionner.
+Erreur CuPy : NoneType / _detect_duplicate_installation
+Cause : métadonnées pip incohérentes lors de l'import cupy. NPOAP : correctif dans main.py ; lancer python test_installation.py pour diagnostic. Sinon pip check, désinstaller toutes les variantes cupy-cuda* puis réinstaller une seule (voir section CuPy).
+Erreur lors de l'installation de Prospector
+Erreur : `ModuleNotFoundError: No module named 'sedpy.observate'`
+Cause : `sedpy` a été installé depuis PyPI au lieu de GitHub.
+Solution :
+```cmd
+pip uninstall sedpy -y
+pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+```
+Erreur : `ModuleNotFoundError: No module named 'astropy'`
+Solution :
+```cmd
+pip install astropy>=5.0.0
+```
+Erreur : `ValueError: could not assign tuple of length 1 to structure with 10 fields`
+Cause : Format incorrect du fichier stub FSPS.
+Solution : Supprimez le fichier stub et relancez l'installation :
+```cmd
+del "%USERPROFILE%\.local\share\fsps\dust\Nenkova08_y010_torusg_n10_q2.0.dat"
+# Puis relancez INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
+```
+Pour plus de détails, consultez `docs/PROTOCOLE_INSTALLATION_PROSPECTOR_WINDOWS.md`.
+L'application est lente
+Solutions :
+Utilisez CuPy si vous avez une carte graphique NVIDIA (voir section 5.2)
+Réduisez le nombre d'images traitées par lot
+Vérifiez que vous utilisez un processeur récent
+Fermez les autres applications lourdes
+Problèmes de connexion avec Astrometry.net
+Si l'astrométrie en ligne échoue :
+Vérifiez votre connexion internet
+Vérifiez votre clé API dans l'onglet "Accueil"
+Consultez https://nova.astrometry.net/ pour le statut du service
+Erreur d'importation de modules locaux
+Erreur : "ModuleNotFoundError: No module named 'core'"
+Solution :
+Assurez-vous d'être dans le répertoire NPOAP
+Vérifiez que les dossiers `core/`, `gui/`, `utils/` existent
+Vérifiez que `__init__.py` existe dans ces dossiers
+---
+Récapitulatif des commandes essentielles
+Installation complète (Conda)
+```cmd
+# Créer l'environnement
+conda create -n astroenv python=3.10
+conda activate astroenv
+
+# Installer les dépendances
+pip install -r requirements.txt
+
+# Optionnel : PHOEBE2
+pip install phoebe
+
+# Lancer l'application
+python main.py
+```
+Mise à jour
+```cmd
+conda activate astroenv
+pip install --upgrade -r requirements.txt
+```
+Installation de Prospector (optionnel)
+```cmd
+conda activate astroenv
+# Utiliser le script automatique (recommandé)
+INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
+
+# Ou installation manuelle
+pip install numpy>=1.20.0 scipy>=1.7.0 pandas>=1.3.0 astropy>=5.0.0
+pip uninstall sedpy -y
+pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+pip install dynesty>=2.0.0 dill>=0.3.0 h5py>=3.0.0 emcee>=3.1.0
+pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+```
+Désinstallation
+```cmd
+conda deactivate
+conda env remove -n astroenv
+```
+---
+Support et ressources
+Documentation utilisateur : `docs/MANUEL_UTILISATEUR.md`
+Protocole d'installation Prospector : `docs/PROTOCOLE_INSTALLATION_PROSPECTOR_WINDOWS.md`
+Logs de l'application : Dossier `logs/`
+Configuration : `config.py` et `config.json`
+---
+11. Remerciements (Acknowledgments)
+NPOAP utilise de nombreuses bibliothèques et outils open-source de la communauté scientifique. Nous tenons à remercier les développeurs et contributeurs suivants :
+Bibliothèques Python principales
+Astropy : Bibliothèque Python pour l'astronomie (https://www.astropy.org/)
+Utilisée pour la manipulation des images FITS, les coordonnées célestes, les transformations WCS, et les calculs astronomiques
+photutils : Outils de photométrie astronomique (https://photutils.readthedocs.io/)
+Utilisée pour la détection d'étoiles, la photométrie par ouverture, et l'estimation du fond de ciel
+astroquery : Interface Python pour les services astronomiques en ligne (https://astroquery.readthedocs.io/)
+Utilisée pour interroger les catalogues Gaia (Vizier) et les éphémérides JPL Horizons
+NumPy, SciPy, Pandas : Bibliothèques fondamentales pour le calcul scientifique en Python
+Utilisées pour les calculs numériques, l'analyse de données, et la manipulation de tableaux
+Matplotlib : Bibliothèque de visualisation (https://matplotlib.org/)
+Utilisée pour l'affichage graphique des images, courbes de lumière, et périodogrammes
+PHOEBE2 : Bibliothèque Python pour la modélisation d'étoiles binaires à éclipses (https://phoebe-project.org/)
+Utilisée pour la modélisation et l'analyse des systèmes binaires dans l'onglet "Étoiles Binaires"
+emcee : Bibliothèque MCMC pour l'ajustement de modèles (https://emcee.readthedocs.io/)
+Utilisée pour l'analyse des variations de temps de transit (TTV)
+statsmodels : Bibliothèque d'analyse statistique (https://www.statsmodels.org/)
+Utilisée pour les analyses statistiques avancées des courbes de lumière
+pylightcurve : Bibliothèque Python pour la modélisation et l'analyse de courbes de lumière d'exoplanètes (https://github.com/ucl-exoplanets/pylightcurve)
+Développée par l'équipe UCL Exoplanets (University College London)
+Utilisée pour la modélisation des transits d'exoplanètes, le calcul des coefficients d'assombrissement du limbe, et l'ajustement flexible de courbes de lumière multi-époques
+Licence MIT
+Pillow (PIL) : Bibliothèque de traitement d'images (https://python-pillow.org/)
+Utilisée pour le traitement et la manipulation d'images
+reportlab : Bibliothèque de génération de PDF (https://www.reportlab.com/)
+Utilisée pour la génération de documentation PDF
+requests : Bibliothèque HTTP pour Python (https://requests.readthedocs.io/)
+Utilisée pour les requêtes HTTP vers les services en ligne
+specutils : Bibliothèque Python pour l'analyse de données spectroscopiques (https://specutils.readthedocs.io/)
+Utilisée pour la représentation, le chargement, la manipulation et l'analyse de spectres d'étoiles
+Développée dans le cadre du projet Astropy
+rebound : Bibliothèque de simulation N-body pour systèmes planétaires (https://rebound.readthedocs.io/)
+Utilisée pour les simulations gravitationnelles dans l'analyse de systèmes multiples (onglet Analyse de Données)
+Permet de modéliser les interactions gravitationnelles entre planètes
+ultranest : Bibliothèque d'échantillonnage bayésien avec nested sampling (https://johannesbuchner.github.io/UltraNest/)
+Utilisée pour le fitting bayésien des modèles N-body aux observations TTV
+Alternative robuste aux méthodes MCMC pour l'estimation de paramètres
+STDPipe : Simple Transient Detection Pipeline (https://stdpipe.readthedocs.io/)
+Auteur principal : Sergey Karpov
+Utilisée pour la photométrie des transitoires : astrométrie automatique, soustraction d'images, détection de transitoires, photométrie calibrée
+Fournit des méthodes avancées de détection (segmentation, DAOStarFinder, IRAFStarFinder)
+Permet le téléchargement d'images de référence depuis Pan-STARRS, SDSS, DES
+Licence MIT
+Services et catalogues externes
+Gaia DR3 : Catalogue astrométrique de l'Agence Spatiale Européenne (ESA)
+Utilisé comme référence astrométrique et photométrique (https://www.cosmos.esa.int/web/gaia)
+Astrometry.net : Service d'astrométrie automatique (http://astrometry.net/)
+Utilisé pour la résolution de champs stellaires (plate solving) via NOVA (service en ligne) et solve-field (installation locale)
+JPL Horizons : Service d'éphémérides du Jet Propulsion Laboratory (NASA)
+Utilisé pour obtenir les éphémérides des astéroïdes et planètes (https://ssd.jpl.nasa.gov/horizons/)
+Vizier : Service de catalogues astronomiques du Centre de données astronomiques de Strasbourg (CDS)
+Utilisé pour interroger les catalogues Gaia et autres catalogues astronomiques (https://vizier.cds.unistra.fr/)
+Outils et frameworks
+Python : Langage de programmation (https://www.python.org/)
+Langage principal de développement
+Conda/Miniconda : Système de gestion d'environnements et de paquets (https://docs.conda.io/)
+Utilisé pour la gestion des environnements Python et des dépendances
+Tkinter : Bibliothèque d'interface graphique (incluse dans Python)
+Utilisée pour l'interface utilisateur graphique
+WSL (Windows Subsystem for Linux) : Système pour exécuter Linux sur Windows (Microsoft)
+Utilisé pour l'installation locale d'Astrometry.net sur Windows
+Références bibliographiques
+Farnocchia et al. (2022) : "International Asteroid Warning Network Timing Campaign: 2019 XS", Planetary Science Journal, 3:156
+Guide de référence pour les améliorations astrométriques implémentées dans NPOAP
+DOI: https://doi.org/10.3847/PSJ/ac7224
+Prša (2018) : "Modeling and Analysis of Eclipsing Binary Stars: The Theory and Design Principles of PHOEBE"
+Référence principale pour l'intégration de PHOEBE2 (DOI: 10.1088/978-0-7503-1287-5)
+Licences
+NPOAP est développé en utilisant des bibliothèques sous diverses licences open-source (principalement BSD, MIT, et Apache 2.0). Nous respectons les licences de toutes les bibliothèques utilisées.
+Pour plus d'informations sur les licences spécifiques, consultez :
+Les fichiers LICENSE ou COPYRIGHT de chaque bibliothèque
+Les sites web officiels des projets mentionnés ci-dessus
+---
+NPOAP - Manuel d'Installation v1.0
+Pour toute question ou problème, consultez la section Dépannage ou contactez l'équipe de développement.
+

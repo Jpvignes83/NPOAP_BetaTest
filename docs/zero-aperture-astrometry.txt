@@ -1,0 +1,20 @@
+Approche « résidus moyens RA/Dec par aperture » (type Zero-Aperture-Astrometry)
+1. Dans la boucle sur les apertures
+Pour chaque aperture, après le fit WCS et le calcul du RMS, on calcule les résidus RA et Dec (arcsec) pour chaque étoile :
+(calc - cat) avec RA en * cos(dec) * 3600.
+On enregistre la moyenne de ces résidus par aperture dans :
+mean_residual_ra_list
+mean_residual_dec_list
+2. Après la boucle : fit et extrapolation à 0
+Si on a au moins 2 apertures et des listes de résidus cohérentes :
+Fit linéaire pondéré (poids = 1/RMS) de mean_residual_ra et mean_residual_dec en fonction de l’aperture.
+Extrapolation à aperture = 0 → offset_ra0_arcsec, offset_dec0_arcsec (offset systématique à aperture nulle).
+WCS corrigé wcs_zero_aperture : copie du WCS avec crval décalé pour annuler ces offsets (RA et Dec en degrés).
+3. Utilisation du WCS corrigé
+Quand la méthode retenue est zero-aperture et que wcs_zero_aperture est disponible, final_wcs (et donc le WCS renvoyé par le pipeline) est ce WCS corrigé.
+4. Sorties dans final_stats
+residual_offset_ra0_arcsec : offset RA à aperture 0 (arcsec), ou None.
+residual_offset_dec0_arcsec : offset Dec à aperture 0 (arcsec), ou None.
+wcs_zero_aperture : WCS avec correction zero-aperture, ou None.
+En pratique : on a bien un WCS par aperture et un RMS par aperture ; en plus, on calcule le résidu moyen RA et Dec par aperture, 
+on l’extrapole à 0, et on applique cette correction au WCS final lorsque la méthode zero-aperture est utilisée.

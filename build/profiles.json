@@ -1,0 +1,154 @@
+{
+  "reduction": {
+    "name": "NPOAP Réduction",
+    "description": "Accueil + Observation de la Nuit + Réduction de données",
+    "enabled_tabs": {
+      "home": true,
+      "data_reduction": true,
+      "ephemerides": true,
+      "photometry_exoplanets": false,
+      "asteroid_photometry": false,
+      "transient_photometry": false,
+      "data_analysis": false,
+      "binary_stars": false,
+      "easy_lucky_imaging": false,
+      "spectroscopy": false,
+      "catalogues": false
+    },
+    "required_core_modules": ["jd_bjd_calculator", "extract_mid_time", "api_key_dialog", "image_processor", "astrometry", "calculate_master"],
+    "required_gui_modules": ["home_tab", "night_observation_tab", "data_reduction_tab"],
+    "required_utils": ["logging_handler", "package_check", "file_handler", "progress_manager"]
+  },
+  "exoplanets": {
+    "name": "NPOAP Exoplanètes",
+    "description": "Accueil + Réduction + Exoplanètes",
+    "enabled_tabs": {
+      "home": true,
+      "data_reduction": true,
+      "photometry_exoplanets": true,
+      "ephemerides": false,
+      "asteroid_photometry": false,
+      "transient_photometry": false,
+      "data_analysis": false,
+      "binary_stars": false,
+      "easy_lucky_imaging": false,
+      "spectroscopy": false,
+      "catalogues": false
+    },
+    "required_core_modules": ["photometry_pipeline", "fast_astrometry", "image_processor", "astrometry", "calculate_master", "jd_bjd_calculator", "lightcurve_tools", "periodogram_tools", "ttv_modeling", "extract_mid_time", "api_key_dialog", "seager_ornelas_transit", "enoch_stellar_mass", "exoplanet_priors_sources", "limb_darkening_power2", "quality_diagnostics", "temporal_binning"],
+    "required_gui_modules": ["home_tab", "photometry_exoplanets_tab", "data_reduction_tab", "target_selector", "lightcurve_fitting", "periodogram_viewer", "ttv_viewer"],
+    "required_utils": ["logging_handler", "package_check", "file_handler", "progress_manager"]
+  },
+  "asteroids": {
+    "name": "NPOAP Astéroïdes",
+    "description": "Accueil + Réduction + Photométrie Astéroïdes",
+    "enabled_tabs": {
+      "home": true,
+      "data_reduction": true,
+      "asteroid_photometry": true,
+      "ephemerides": false,
+      "photometry_exoplanets": false,
+      "transient_photometry": false,
+      "data_analysis": false,
+      "binary_stars": false,
+      "easy_lucky_imaging": false,
+      "spectroscopy": false,
+      "catalogues": false
+    },
+    "required_core_modules": ["jd_bjd_calculator", "extract_mid_time", "api_key_dialog", "fast_astrometry", "image_processor", "astrometry", "calculate_master", "photometry_pipeline", "periodogram_tools", "asteroid_lightcurve_model", "asteroid_shape_model", "photometry_pipeline_asteroids"],
+    "required_gui_modules": ["home_tab", "data_reduction_tab", "asteroid_photometry_tab"],
+    "required_utils": ["logging_handler", "package_check", "file_handler", "progress_manager", "wsl_utils"]
+  },
+  "binary_stars": {
+    "name": "NPOAP Étoiles Doubles",
+    "description": "Accueil + Étoiles Binaires + Easy Lucky Imaging",
+    "enabled_tabs": {
+      "home": true,
+      "binary_stars": true,
+      "easy_lucky_imaging": true,
+      "ephemerides": false,
+      "data_reduction": false,
+      "photometry_exoplanets": false,
+      "asteroid_photometry": false,
+      "transient_photometry": false,
+      "data_analysis": false,
+      "spectroscopy": false,
+      "catalogues": false
+    },
+    "required_core_modules": ["binary_star_reduction", "binary_star_catalogs", "image_processor", "jd_bjd_calculator", "api_key_dialog"],
+    "required_gui_modules": ["home_tab", "binary_stars_tab", "easy_lucky_imaging_tab", "binary_stars_viewer", "binary_star_reduction_window"],
+    "required_utils": ["logging_handler", "package_check", "file_handler", "progress_manager"]
+  },
+  "transient": {
+    "name": "NPOAP Photométrie Transitoires",
+    "description": "Accueil + Réduction + Photométrie Transitoires",
+    "enabled_tabs": {
+      "home": true,
+      "data_reduction": true,
+      "transient_photometry": true,
+      "ephemerides": false,
+      "photometry_exoplanets": false,
+      "asteroid_photometry": false,
+      "data_analysis": false,
+      "binary_stars": false,
+      "easy_lucky_imaging": false,
+      "spectroscopy": false,
+      "catalogues": false
+    },
+    "required_core_modules": ["jd_bjd_calculator", "extract_mid_time", "api_key_dialog", "image_processor", "astrometry", "calculate_master", "stdpipe_wrapper", "tns_client"],
+    "required_gui_modules": ["home_tab", "data_reduction_tab", "transient_photometry_tab"],
+    "required_utils": ["logging_handler", "package_check", "file_handler", "progress_manager"]
+  },
+  "catalogues": {
+    "name": "NPOAP Catalogues",
+    "description": "Accueil + extraction de catalogues (Vizier, Gaia DR3, MPC, MAST, TESS / LcTools…) + Analyse des Données",
+    "enabled_tabs": {
+      "home": true,
+      "catalogues": true,
+      "ephemerides": false,
+      "photometry_exoplanets": false,
+      "data_reduction": false,
+      "asteroid_photometry": false,
+      "transient_photometry": false,
+      "data_analysis": true,
+      "binary_stars": false,
+      "easy_lucky_imaging": false,
+      "cluster_analysis": false,
+      "spectroscopy": false
+    },
+    "required_core_modules": [
+      "catalog_extractor",
+      "linear_separation_calculator",
+      "gaia_dr3_extractor",
+      "transit_catalog_merge",
+      "lc_transit_pick",
+      "lightcurve_tools",
+      "periodogram_tools",
+      "ttv_modeling",
+      "nbody_simulation"
+    ],
+    "required_gui_modules": ["home_tab", "catalogues_tab", "data_analysis_tab"],
+    "required_utils": ["logging_handler", "package_check", "file_handler", "progress_manager"]
+  },
+  "full": {
+    "name": "NPOAP Complet",
+    "description": "Distribution complète avec tous les modules",
+    "enabled_tabs": {
+      "home": true,
+      "ephemerides": true,
+      "photometry_exoplanets": true,
+      "data_reduction": true,
+      "asteroid_photometry": true,
+      "transient_photometry": true,
+      "data_analysis": true,
+      "binary_stars": true,
+      "easy_lucky_imaging": true,
+      "cluster_analysis": true,
+      "spectroscopy": true,
+      "catalogues": true
+    },
+    "required_core_modules": "all",
+    "required_gui_modules": "all",
+    "required_utils": "all"
+  }
+}
